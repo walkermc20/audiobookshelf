@@ -16,7 +16,7 @@ on:
         default: 'ios-hls'
   push:
     branches:
-      - 'ios-hls**'
+      - 'ios-hls*'
       - 'claude/**'
     paths:
       - client/**
@@ -24,6 +24,7 @@ on:
       - index.js
       - package.json
       - Dockerfile
+      - .github/workflows/fork-ghcr-build.yml
 
 jobs:
   build:
