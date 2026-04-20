@@ -39,6 +39,8 @@ class Stream extends EventEmitter {
     this.isTranscodeComplete = false
     this.segmentsCreated = new Set()
     this.furthestSegmentCreated = 0
+
+    this.persistOnClose = !!transcodeOptions.persistOnClose
   }
 
   /**
@@ -234,6 +236,15 @@ class Stream extends EventEmitter {
   async start() {
     Logger.info(`[STREAM] START STREAM - Num Segments: ${this.numSegments}`)
 
+    if (this.persistOnClose) {
+      try {
+        await fs.ensureDir(this.streamPath)
+        await fs.writeFile(Path.join(this.streamPath, '.persistent'), '')
+      } catch (err) {
+        Logger.warn(`[STREAM] Failed to write .persistent marker: ${err.message}`)
+      }
+    }
+
     /** @type {import('../libs/fluentFfmpeg/index').FfmpegCommand} */
     this.ffmpeg = Ffmpeg()
     this.furthestSegmentCreated = 0
@@ -363,14 +374,18 @@ class Stream extends EventEmitter {
       this.ffmpeg.kill('SIGKILL')
     }
 
-    await fs
-      .remove(this.streamPath)
-      .then(() => {
-        Logger.info('Deleted session data', this.streamPath)
-      })
-      .catch((err) => {
-        Logger.error('Failed to delete session data', err)
-      })
+    if (this.persistOnClose) {
+      Logger.info(`[STREAM] Persisting stream files on close (${this.streamPath})`)
+    } else {
+      await fs
+        .remove(this.streamPath)
+        .then(() => {
+          Logger.info('Deleted session data', this.streamPath)
+        })
+        .catch((err) => {
+          Logger.error('Failed to delete session data', err)
+        })
+    }
 
     if (errorMessage) this.clientEmit('stream_error', { id: this.id, error: (errorMessage || '').trim() })
     else this.clientEmit('stream_closed', this.id)

@@ -318,8 +318,9 @@ class PlaybackSessionManager {
       await this.closeSession(user, session, null)
     }
 
-    const shouldDirectPlay = options.forceDirectPlay || (!options.forceTranscode && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId))
     const mediaPlayer = options.mediaPlayer || 'unknown'
+    const iosHlsPersistEnabled = process.env.ENABLE_IOS_HLS_PERSIST === '1' && mediaPlayer === 'ios-hls'
+    const shouldDirectPlay = !iosHlsPersistEnabled && (options.forceDirectPlay || (!options.forceTranscode && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId)))
 
     const mediaItemId = episodeId || libraryItem.media.id
     const userProgress = user.getMediaProgress(mediaItemId)
@@ -342,7 +343,8 @@ class PlaybackSessionManager {
       newPlaybackSession.playMethod = PlayMethod.DIRECTPLAY
     } else {
       Logger.debug(`[PlaybackSessionManager] "${user.username}" starting stream session for item "${libraryItem.id}" (Device: ${newPlaybackSession.deviceDescription})`)
-      const stream = new Stream(newPlaybackSession.id, this.StreamsPath, user, libraryItem, episodeId, userStartTime)
+      const transcodeOptions = iosHlsPersistEnabled ? { persistOnClose: true } : {}
+      const stream = new Stream(newPlaybackSession.id, this.StreamsPath, user, libraryItem, episodeId, userStartTime, transcodeOptions)
       await stream.generatePlaylist()
       stream.start() // Start transcode
 
@@ -473,6 +475,11 @@ class PlaybackSessionManager {
           const session = this.sessions.find((se) => se.id === streamId)
           if (!session) {
             const streamPath = Path.join(this.StreamsPath, streamId)
+            const persistentMarker = Path.join(streamPath, '.persistent')
+            if (await fs.pathExists(persistentMarker)) {
+              Logger.debug(`[PlaybackSessionManager] Keeping persistent stream "${streamPath}"`)
+              continue
+            }
             Logger.debug(`[PlaybackSessionManager] Removing orphan stream "${streamPath}"`)
             await fs.remove(streamPath)
           }
