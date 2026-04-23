@@ -337,11 +337,13 @@ class Stream extends EventEmitter {
         Logger.info('[FFMPEG] Transcode Killed')
         this.ffmpeg = null
         clearInterval(this.loop)
+        this.emit('ffmpegExit')
       } else if (this.isClosed) {
         // Stream already closed (persistent session detached ffmpeg); swallow
         // errors rather than triggering reset/re-close on a dead session.
         Logger.info(`[FFMPEG] Error after stream close (persistent): "${err.message}"`)
         this.ffmpeg = null
+        this.emit('ffmpegExit')
       } else {
         Logger.error('Ffmpeg Err', '"' + err.message + '"')
 
@@ -361,6 +363,7 @@ class Stream extends EventEmitter {
 
     this.ffmpeg.on('end', (stdout, stderr) => {
       Logger.info('[FFMPEG] Transcoding ended')
+      this.emit('ffmpegExit')
       // For very small fast load
       if (!this.isClientInitialized) {
         this.isClientInitialized = true

@@ -24,6 +24,15 @@ class PlaybackSessionManager {
 
     /** @type {PlaybackSession[]} */
     this.sessions = []
+
+    /**
+     * Stream objects whose session has been closed but whose ffmpeg is still
+     * producing segments in the background (iOS HLS persistent cache). Keyed
+     * by sessionId. Lets deleteHlsCache find and kill the process before
+     * wiping the cache dir (fs.remove otherwise races against ffmpeg writes).
+     * @type {Map<string, import('../objects/Stream')>}
+     */
+    this.persistentStreams = new Map()
   }
 
   /**
@@ -357,6 +366,17 @@ class PlaybackSessionManager {
         Logger.debug(`[PlaybackSessionManager] Stream closed for session "${newPlaybackSession.id}" (Device: ${newPlaybackSession.deviceDescription})`)
         newPlaybackSession.stream = null
       })
+
+      if (iosHlsPersistEnabled) {
+        // Keep a reference to the Stream object even after closeSession
+        // removes the session from this.sessions -- ffmpeg is still running
+        // to finish the transcode in the background. deleteHlsCache needs
+        // to find this Stream to SIGKILL ffmpeg before wiping the cache dir.
+        this.persistentStreams.set(newPlaybackSession.id, stream)
+        stream.once('ffmpegExit', () => {
+          this.persistentStreams.delete(newPlaybackSession.id)
+        })
+      }
     }
     newPlaybackSession.audioTracks = audioTracks
 

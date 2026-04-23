@@ -257,15 +257,52 @@ class SessionController {
       // If neither a session nor a marker exist, fall through to idempotent 200.
     }
 
+    // A persistent-close session leaves ffmpeg running in the background
+    // (persistOnClose) so the transcode can finish even after the client
+    // moved on. When the client signals completion via this endpoint we
+    // have to kill ffmpeg first -- otherwise fs.remove races against
+    // active segment writes and fails with ENOTEMPTY on final rmdir.
+    const persistentStream = this.playbackSessionManager.persistentStreams?.get(sessionId)
+    if (persistentStream?.ffmpeg) {
+      Logger.info(`[SessionController] deleteHlsCache: killing background ffmpeg for "${sessionId}"`)
+      try {
+        persistentStream.ffmpeg.kill('SIGKILL')
+      } catch (err) {
+        Logger.warn(`[SessionController] deleteHlsCache: kill failed (continuing): ${err.message}`)
+      }
+      // The Stream's error handler nulls this.ffmpeg on SIGKILL. Poll with
+      // a short cap so we proceed regardless (fs.remove has its own retry
+      // below and Linux tolerates unlinking files under open fds).
+      for (let i = 0; i < 20 && persistentStream.ffmpeg; i++) {
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      this.playbackSessionManager.persistentStreams.delete(sessionId)
+    }
+
     // Wipe the cache dir. Path is constrained to StreamsPath/{sessionId}
     // and sessionId was validated as a UUID above, so no traversal risk.
-    try {
-      await fs.remove(streamDir)
-      Logger.info(`[SessionController] deleteHlsCache: purged "${streamDir}" (user=${req.user.username})`)
-    } catch (err) {
-      Logger.error(`[SessionController] deleteHlsCache: failed to purge "${streamDir}": ${err.message}`)
+    // Retry a few times to cover any tail-end ffmpeg writes that slipped
+    // past the kill (rare, but observed in tests under copy-codec mpegts).
+    let lastErr = null
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await fs.remove(streamDir)
+        lastErr = null
+        break
+      } catch (err) {
+        lastErr = err
+        if (err.code === 'ENOENT') {
+          lastErr = null
+          break
+        }
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
+      }
+    }
+    if (lastErr) {
+      Logger.error(`[SessionController] deleteHlsCache: failed to purge "${streamDir}" after retries: ${lastErr.message}`)
       return res.sendStatus(500)
     }
+    Logger.info(`[SessionController] deleteHlsCache: purged "${streamDir}" (user=${req.user.username})`)
 
     res.sendStatus(200)
   }
