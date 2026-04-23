@@ -477,7 +477,21 @@ class PlaybackSessionManager {
             const streamPath = Path.join(this.StreamsPath, streamId)
             const persistentMarker = Path.join(streamPath, '.persistent')
             if (await fs.pathExists(persistentMarker)) {
-              Logger.debug(`[PlaybackSessionManager] Keeping persistent stream "${streamPath}"`)
+              // Persistent iOS HLS cache entry. Keep unless past TTL.
+              const ttlDays = Number(process.env.IOS_HLS_PERSIST_TTL_DAYS) || 30
+              try {
+                const stat = await fs.stat(persistentMarker)
+                const ageMs = Date.now() - stat.mtimeMs
+                const ttlMs = ttlDays * 24 * 60 * 60 * 1000
+                if (ageMs > ttlMs) {
+                  Logger.info(`[PlaybackSessionManager] Evicting persistent HLS cache past TTL (${ttlDays}d): "${streamPath}"`)
+                  await fs.remove(streamPath)
+                } else {
+                  Logger.debug(`[PlaybackSessionManager] Keeping persistent stream "${streamPath}" (age ${Math.round(ageMs / 86400000)}d / ${ttlDays}d)`)
+                }
+              } catch (err) {
+                Logger.warn(`[PlaybackSessionManager] Failed to stat persistent marker "${persistentMarker}": ${err.message}`)
+              }
               continue
             }
             Logger.debug(`[PlaybackSessionManager] Removing orphan stream "${streamPath}"`)

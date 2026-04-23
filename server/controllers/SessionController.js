@@ -2,6 +2,7 @@ const Path = require('path')
 const { Request, Response, NextFunction } = require('express')
 const Logger = require('../Logger')
 const Database = require('../Database')
+const fs = require('../libs/fsExtra')
 const { toNumber, isUUID } = require('../utils/index')
 const { getAudioMimeTypeFromExtname, encodeUriPath } = require('../utils/fileUtils')
 const { PlayMethod } = require('../utils/constants')
@@ -197,6 +198,58 @@ class SessionController {
     }
 
     await Database.removePlaybackSession(req.playbackSession.id)
+    res.sendStatus(200)
+  }
+
+  /**
+   * DELETE: /api/session/:id/hls-cache
+   *
+   * Release a persistent HLS cache entry created by an ios-hls session.
+   * The client calls this when its AVAssetDownloadTask has finished
+   * capturing the asset (or when the user removes the book), at which
+   * point the server-side transcode is safe to delete.
+   *
+   * Works whether or not the session is still in memory -- a download
+   * may span days, well past the 36h idle-expiry of the in-memory
+   * session record.
+   *
+   * Idempotent: returns 200 even if the cache dir is already gone.
+   *
+   * @this {import('../routers/ApiRouter')}
+   *
+   * @param {RequestWithUser} req
+   * @param {Response} res
+   */
+  async deleteHlsCache(req, res) {
+    const sessionId = req.params.id
+    if (!isUUID(sessionId)) {
+      Logger.warn(`[SessionController] deleteHlsCache: invalid session id "${sessionId}"`)
+      return res.sendStatus(400)
+    }
+
+    // If still in memory, verify ownership and tear down cleanly first.
+    const openSession = this.playbackSessionManager.getSession(sessionId)
+    if (openSession) {
+      if (openSession.userId !== req.user.id && !req.user.isAdminOrUp) {
+        Logger.warn(`[SessionController] deleteHlsCache: user "${req.user.username}" attempted to purge session owned by another user`)
+        return res.sendStatus(403)
+      }
+      await this.playbackSessionManager.removeSession(sessionId)
+    }
+
+    // Wipe the cache dir whether or not the session existed -- the file
+    // may have outlived its session via the persistOnClose marker. Path
+    // is constrained to StreamsPath/{sessionId}, and sessionId passed
+    // isUUID() above, so no traversal risk.
+    const streamDir = Path.join(this.playbackSessionManager.StreamsPath, sessionId)
+    try {
+      await fs.remove(streamDir)
+      Logger.info(`[SessionController] deleteHlsCache: purged "${streamDir}" (user=${req.user.username})`)
+    } catch (err) {
+      Logger.error(`[SessionController] deleteHlsCache: failed to purge "${streamDir}": ${err.message}`)
+      return res.sendStatus(500)
+    }
+
     res.sendStatus(200)
   }
 

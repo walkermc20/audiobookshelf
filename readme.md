@@ -37,6 +37,24 @@
 >
 > If either is absent, behavior is byte-identical to upstream — **default off**.
 >
+> **Client lifecycle:**
+>
+> - `POST /api/items/:id/play` with `mediaPlayer: "ios-hls"` starts a
+>   transcode and returns a manifest URL (`/hls/:sessionId/output.m3u8`).
+>   The manifest enumerates the complete segment list up front, so a
+>   client using `AVAssetDownloadURLSession` (or hls.js) can begin
+>   downloading immediately while ffmpeg is still producing segments.
+> - The manifest URL remains valid across session idle-expiry, orphan
+>   sweeps, and server restarts.
+> - When the client finishes capturing the asset (or the user deletes
+>   it), the client calls `DELETE /api/session/:id/hls-cache` to release
+>   the server-side transcode. Idempotent; works regardless of whether
+>   the session is still in memory.
+> - **TTL safety net:** on server startup, persistent HLS cache entries
+>   whose `.persistent` marker is older than `IOS_HLS_PERSIST_TTL_DAYS`
+>   (default 30) are evicted. Covers clients that crash before they
+>   call `DELETE`.
+>
 > **Artifacts:**
 >
 > - Server change: [commit ac47208a](https://github.com/walkermc20/audiobookshelf/commit/ac47208a)
