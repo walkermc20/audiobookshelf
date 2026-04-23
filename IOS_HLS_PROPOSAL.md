@@ -1,186 +1,236 @@
-# Proposal: opt-in HLS output for iOS clients (AVAssetDownloadURLSession support)
+# Proposal: opt-in persistent HLS for iOS clients (AVAssetDownloadURLSession support)
 
-**Status:** Draft for upstream issue on `advplyr/audiobookshelf`
-**Author:** (fill in)
-**Audience:** ABS server maintainers + iOS client authors (ShelfPlayer, official app)
+**Status:** Reference implementation complete and test-verified on a fork.
+Opening a Discussion on `advplyr/audiobookshelf` to align on the opt-in shape
+and any concerns before filing a Draft PR.
+
+**Author:** walkermc20
+
+**Audience:** advplyr/audiobookshelf maintainers, iOS client authors
+(ShelfPlayer, official app)
+
+**Fork:** https://github.com/walkermc20/audiobookshelf/tree/ios-hls-persistent
+
+**Image for quick try:** `ghcr.io/walkermc20/audiobookshelf:ios-hls-persistent`
+(public GHCR; opt-in via `ENABLE_IOS_HLS_PERSIST=1` env var or
+`enableIosHlsPersist: true` in server settings)
+
+**Downstream interest:** rasmuslos (author of
+[ShelfPlayer](https://github.com/rasmuslos/ShelfPlayer)) has responded
+positively in a DM thread and indicated he'd implement the client side
+if something along these lines lands upstream.
 
 ---
 
 ## 1. Motivation
 
-Third-party iOS clients (notably [ShelfPlayer](https://github.com/rasmuslos/ShelfPlayer)) currently ship **two parallel playback paths**:
+Third-party iOS clients (notably ShelfPlayer) currently ship **two parallel
+playback paths**:
 
-1. **Stream** — progressive MP3/M4B fetched from `/api/items/:id/file/:ino` and handed to `AVPlayer`.
-2. **Offline** — a separately‑downloaded file copy played from local storage.
+1. **Stream** — progressive MP3/M4B fetched from
+   `/api/items/:id/file/:ino` and handed to `AVPlayer`.
+2. **Offline** — a separately-downloaded file copy played from local
+   storage.
 
-Downstream consequences in the client:
+Downstream consequences in the client: hundreds of lines branching on
+`isDownloaded?`, an artificial guard preventing a download while the same
+item is playing (two paths can't share a file handle), a hand-rolled
+prefetch buffer, and separate progress-sync pipelines for download vs.
+playback.
 
-- Hundreds of lines of branching on `isDownloaded?` in playback, progress‑sync, and artwork paths.
-- An artificial guard preventing a download while the same item is playing (the two paths can't share a file handle).
-- A scrub/prefetch buffer the client has to manage by hand.
-- Download progress and playback progress are separate subsystems that have to be kept in sync.
+Apple's `AVAssetDownloadURLSession` collapses this into **one pipeline**:
+it streams HLS during playback *and* writes a persistent `.movpkg` to
+disk. The same `AVPlayer` later replays the `.movpkg` offline with zero
+code-path change. "Download this" becomes a boolean on the asset download
+task rather than a separate subsystem. Scrub buffering is AVFoundation's
+problem.
 
-Apple's `AVAssetDownloadURLSession` is designed to collapse this into **one pipeline**:
+The only requirement on the server is that a **manifest URL returned by
+`POST /api/items/:id/play` remains valid across session idle-expiry and
+server restarts**, so `AVAssetDownloadURLSession` can keep fetching
+segments for as long as a download takes (often hours or days). Upstream
+ABS ties manifests to in-memory sessions that die after 36 h idle, so
+today's HLS path works for browsers but breaks the `AVAssetDownloadURLSession`
+model.
 
-- It streams HLS during playback *and* writes a persistent `.movpkg` to disk.
-- The same `AVPlayer` replays the `.movpkg` offline without any code path change in the app.
-- "Download this" becomes a boolean on the asset download task (keep the `.movpkg` vs. let the OS evict it) rather than a separate subsystem.
-- Scrub buffering is handled by AVFoundation.
+## 2. Non-goals
 
-The only requirement on the server is: **return an HLS manifest URL from the iOS playback‑session response**, while leaving progressive MP3/M4B output in place for Android, the web client, and self‑hosters who don't want HLS.
+- **Not** replacing the direct-play path for Android/web.
+- **Not** turning on HLS by default. Weak-hardware self-hosters (RPi,
+  NAS) should not be forced to transcode.
+- **Not** introducing video HLS, adaptive bitrate, or multiple audio
+  renditions.
+- **Not** changing chapter metadata (already returned via the
+  `PlaybackSession` JSON, segmentation-independent).
+- **Not** addressing the "dumb client" case covered by
+  [#5003](https://github.com/advplyr/audiobookshelf/issues/5003).
+  Complementary direction.
 
-## 2. Non‑goals
+## 3. Prior art on this repo
 
-- **Not** replacing the direct‑play path for Android/web.
-- **Not** turning on HLS by default. Weak‑hardware self‑hosters (RPi, NAS) should not be forced to transcode.
-- **Not** introducing video HLS or adaptive bitrate — single audio rendition only.
-- **Not** changing chapter metadata (already returned out‑of‑band, works today).
-- **Not** addressing the "dumb client" / low‑power hardware case. That's the orthogonal direction proposed in [#5003](https://github.com/advplyr/audiobookshelf/issues/5003) (direct MP3 + server‑side seeking for ESPHome / Squeezebox / DLNA). Both proposals push ABS toward an explicit per‑client‑class output matrix rather than one‑size‑fits‑all, and they don't conflict — this one adds iOS‑HLS, #5003 adds a no‑HLS path for hardware that can't speak it at all.
+- [#2040 — Playback Options (force HLS)](https://github.com/advplyr/audiobookshelf/issues/2040).
+  Narrower and arguably addressable today via `forceTranscode: true`.
+  This proposal's plumbing makes #2040 trivially closeable or
+  implementable as a client-side follow-up.
+- [#5003 — Direct MP3 Stream with server-side seeking](https://github.com/advplyr/audiobookshelf/issues/5003).
+  Complementary (opposite direction: dumb clients).
 
-## 2.5 Prior art
+## 4. Design
 
-- **[#2040 — Playback Options (force HLS)](https://github.com/advplyr/audiobookshelf/issues/2040)** (opened Aug 2023, no maintainer response in 2+ years). Asks for a user‑facing checkbox / dropdown to force the existing browser HLS transcode when client codec detection is wrong. It's narrower than this proposal (UI only, no new client class, no persistent cache) and arguably already addressable today via the `forceTranscode` field on the play endpoint — closer to a user‑error workaround than a missing feature. **Suggest the maintainers consider closing #2040**: its stated problem ("certain files not playing because the client incorrectly reports the codec is supported") is a codec‑detection bug in the client, not a server capability gap. If a UI toggle is still wanted after this proposal ships, it becomes a trivial client‑side follow‑up on top of the `mediaPlayer: "ios-hls"` plumbing below.
-- **[#5003 — Direct MP3 Stream with server‑side seeking](https://github.com/advplyr/audiobookshelf/issues/5003)** (opened Jan 2026). Complementary rather than overlapping — see Non‑goals above. Endorsed direction.
+Two toggles, one new endpoint, a marker file, a TTL sweep, and a map
+that tracks background ffmpeg processes. **Default off.**
 
-## 3. Current state in `advplyr/audiobookshelf`
+### 4.1 Opt-in gates
 
-Investigation performed on `master` (commit `b41db239`, v2.33.2).
+**Server-side** (either works):
 
-### 3.1 HLS already exists — for browser transcode
+- `ServerSettings.enableIosHlsPersist` (boolean, default `false`), or
+- `ENABLE_IOS_HLS_PERSIST=1` env var (overrides the setting; useful for
+  headless deployments without the admin UI).
 
-- `server/objects/Stream.js` drives ffmpeg, produces a `.m3u8` + `output-%d.ts` (mpegts) in `{MetadataPath}/streams/{sessionId}/`. Segment length is 6 s. `hls_playlist_type vod`, `hls_list_size 0` — the manifest is complete up front.
-- `server/utils/generators/hlsPlaylistGenerator.js` pre‑writes the full manifest before ffmpeg starts, so clients see the duration immediately.
-- `server/routers/HlsRouter.js` serves `GET /hls/:stream/:file`, mounted in `server/Server.js` **outside** the auth middleware. It authenticates by looking up the streamId in `PlaybackSessionManager.getStream()`; an unguessable UUID is the bearer credential.
-- `server/managers/PlaybackSessionManager.js` `startSession()` decides direct‑play vs. transcode:
-  ```js
-  const shouldDirectPlay = options.forceDirectPlay
-    || (!options.forceTranscode
-        && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId))
-  ```
-  When it transcodes, it hands the client a single `AudioTrack` with `contentUrl = "/hls/{sessionId}/output.m3u8"` and `mimeType = application/vnd.apple.mpegurl`.
+**Client-side:** request body includes `mediaPlayer: "ios-hls"` in
+`POST /api/items/:id/play`.
 
-### 3.2 fmp4 is deliberately off on iOS
+If either side is absent, behavior is byte-identical to upstream.
 
-`Stream.js` hardcodes `hlsSegmentType = 'mpegts'` with a comment linking `advplyr/audiobookshelf-app#85` (fmp4 + iOS broke playback at the time). The fmp4 code path exists but is unreachable. **This workaround predates this proposal and may be stale** — worth retesting on modern iOS, but not a blocker.
+### 4.2 Session lifecycle
 
-### 3.3 Chapters are already segmentation‑independent
+1. Play endpoint starts a `Stream` as today, with one extra
+   `transcodeOptions.persistOnClose = true` flag.
+2. `Stream.start()` writes a JSON `.persistent` marker into the stream
+   dir with `{ userId, createdAt }` (used for cross-user auth on
+   teardown).
+3. `Stream.close()` — called when the session idle-expires or a new
+   session starts for the same user+device — skips the normal
+   `fs.remove(streamPath)` when `persistOnClose` is set, and leaves
+   ffmpeg running so the transcode can finish in the background even
+   after the HTTP session is gone.
+4. `HlsRouter` falls back to serving segments directly from disk when
+   the in-memory session is gone but the `.persistent` marker exists.
+   This is what makes the manifest URL survive session close / server
+   restart.
+5. `PlaybackSessionManager.removeOrphanStreams()` (already runs at
+   startup) respects the marker: persistent dirs are kept unless their
+   marker mtime is older than `iosHlsPersistTtlDays` (default 30),
+   in which case they're evicted. Markerless orphan dirs are still
+   deleted exactly as before.
 
-`PlaybackSession.setData()` populates `this.chapters = libraryItem.media.getChapters(episodeId)` and `toJSONForClient()` ships them on every session response. Nothing in the HLS pipeline aligns segment boundaries to chapter starts, and nothing needs to — chapters are consumed from the session JSON by the client, not from the manifest.
+### 4.3 Completion signal
 
-### 3.4 No persistent HLS cache
+`DELETE /api/session/:id/hls-cache`
 
-Stream directories are deleted on session close and by an orphan sweeper in `PlaybackSessionManager.removeOrphanStreams()`. Sessions idle‑expire at **36 hours**. That's fine for browser playback but a blocker for `AVAssetDownloadURLSession`, which may take longer than 36 h to finish on slow connections and will definitely be resumed across days.
+- Client calls this when `AVAssetDownloadTask` finishes capturing the
+  `.movpkg` (or when the user removes the downloaded book).
+- Session-independent: works whether the in-memory session still
+  exists, has idle-expired, or died with a server restart.
+- Ownership: verified against the in-memory session if present,
+  otherwise against the `userId` stored in the `.persistent` marker.
+  Admin override.
+- If ffmpeg is still running (registered in
+  `PlaybackSessionManager.persistentStreams` map), SIGKILL first; poll
+  for exit up to 2 s before `fs.remove` (otherwise rimraf races
+  ffmpeg's segment writes and fails with `ENOTEMPTY`).
+- Idempotent: 200 if already gone; 400 on non-UUID; 403 on cross-user
+  mismatch; 500 only on terminal filesystem failure.
 
-### 3.5 Settings pattern
+### 4.4 No response-schema change
 
-`server/objects/settings/ServerSettings.js` is the standard home for server‑wide booleans. Fields are declared in the constructor, rehydrated in `construct()`, serialized in `toJSON()` / `toJSONForBrowser()`, and surfaced in the admin settings UI.
-
-## 4. Proposed design
-
-Two server‑side knobs and a small request/response addition. **Default off.**
-
-### 4.1 Server settings (new)
-
-Added to `ServerSettings`:
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enableHlsForIos` | bool | `false` | When true, iOS clients may request an HLS response from the play endpoint even if the source file would direct‑play. |
-| `persistHlsCache` | bool | `false` | When true, HLS output for an item is written to a persistent cache dir and reused across sessions. Requires `enableHlsForIos`. |
-| `hlsCacheMaxBytes` | int | `0` (unlimited) | Soft cap; LRU eviction when exceeded. |
-
-Admin UI: a single "iOS HLS output" section under the existing transcoding/playback settings, with the second two checkboxes greyed out unless the first is on.
-
-### 4.2 Play endpoint (changed)
-
-`POST /api/items/:id/play` and `.../play/:episodeId` already accept `mediaPlayer`, `forceTranscode`, `forceDirectPlay`, `supportedMimeTypes`. Add one optional field:
-
-```jsonc
-{
-  "mediaPlayer": "ios-hls",      // existing field, new recognized value
-  "supportedMimeTypes": [...],   // unchanged
-  "forceTranscode": false        // unchanged
-}
-```
-
-`PlaybackSessionManager.startSession()` gains a branch: if `mediaPlayer === 'ios-hls'` **and** `serverSettings.enableHlsForIos`, bypass the direct‑play check and return HLS regardless of source MIME type. Otherwise the existing logic runs unchanged. No response‑schema change — the client gets the same `audioTracks[0].contentUrl = "/hls/{sessionId}/output.m3u8"` shape it would today under a transcode path.
-
-### 4.3 Persistent cache path (when `persistHlsCache=true`)
-
-- Cache dir: `{MetadataPath}/hlsCache/{libraryItemId}/{episodeId|'book'}/`
-- On first iOS‑HLS request for an (itemId, episodeId): ffmpeg runs as today, but output goes to the cache dir instead of a session‑scoped dir, and the session's stream record is **not** unlinked on session close.
-- Subsequent iOS‑HLS requests for the same (itemId, episodeId) skip ffmpeg and return a manifest URI directly.
-- Invalidation: on library rescan, if the underlying audio file's mtime/size changed, delete the cache entry for that item.
-- Eviction: LRU by `hlsCacheMaxBytes`. Manual purge via a new admin endpoint `DELETE /api/admin/hls-cache/:libraryItemId` (and a "Clear all" button).
-
-### 4.4 Manifest URL and auth
-
-Recommend **option A** for minimum change:
-
-- Reuse `/hls/:stream/:file`. When persistent caching is on, `:stream` is a deterministic id derived from `(libraryItemId, episodeId)` rather than a per‑session UUID.
-- `HlsRouter` gains a lookup that checks the cache dir in addition to `PlaybackSessionManager.getStream()`.
-- Auth remains **session‑ID‑as‑bearer**: the manifest URL contains a secret. The play endpoint is authenticated, and only an authenticated user can obtain a manifest URL for an item they can access. Once obtained, the URL is the credential — equivalent to how cover image URLs work today.
-
-Note for `AVAssetDownloadURLSession` implementers: AVFoundation does accept custom HTTP headers per request via `AVAssetResourceLoaderDelegate`, so a signed‑token scheme is possible as a follow‑up. Not required for v1.
-
-**Open question:** should the cache URL embed a per‑user HMAC to prevent a leaked URL from being shared across users? Can be added later without breaking v1 clients.
+The play endpoint response is unchanged. Clients get the same
+`audioTracks[0].contentUrl = "/hls/{sessionId}/output.m3u8"` and
+`mimeType = application/vnd.apple.mpegurl` they'd get under the
+existing browser-transcode path. Chapters continue to ship in
+`PlaybackSession.chapters` out-of-band, segmentation-independent.
 
 ### 4.5 Segment format
 
-Stay on **mpegts**. The fmp4/iOS issue (`audiobookshelf-app#85`) predates this proposal; investigating whether it still applies on current iOS is a separate task and shouldn't gate this feature. mpegts already works on iOS today via `AVPlayer` and will work with `AVAssetDownloadURLSession`.
+Stays on **mpegts**. The fmp4/iOS workaround in `Stream.js:81` predates
+this proposal; if it's stale on current iOS, switching is a separate
+follow-up.
 
-### 4.6 Chapters
+## 5. What's implemented on the fork
 
-No change. `PlaybackSession.chapters` already ships in the play‑endpoint response; ShelfPlayer reads it from JSON, not from the manifest. Segment boundaries remain fixed 6 s and do not need to align to chapters.
+All of the above is live at commit
+[`6092c70f`](https://github.com/walkermc20/audiobookshelf/commit/6092c70f):
 
-## 5. Scope estimate
+| Area | Files touched |
+|---|---|
+| Opt-in gate + direct-play bypass | [PlaybackSessionManager.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/managers/PlaybackSessionManager.js) |
+| Persistent-close + marker + isClosed gate + ffmpegExit event | [Stream.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/objects/Stream.js) |
+| Disk fallback in router | [HlsRouter.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/routers/HlsRouter.js) |
+| DELETE endpoint + controller (UUID / in-memory / marker / kill / retry) | [SessionController.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/controllers/SessionController.js), [ApiRouter.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/routers/ApiRouter.js) |
+| Server settings (`enableIosHlsPersist`, `iosHlsPersistTtlDays`) + env override | [ServerSettings.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/objects/settings/ServerSettings.js) |
+| Persistent-ffmpeg tracking for clean teardown | [PlaybackSessionManager.js](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/server/managers/PlaybackSessionManager.js) |
+| OpenAPI stub for the new endpoint | [docs/controllers/SessionController.yaml](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/docs/controllers/SessionController.yaml) |
 
-Broken into two shippable phases:
+Total diff against master: **~230 lines** across server code.
 
-### Phase 1 — on‑demand iOS HLS (MVP)
+### Test coverage
 
-- Add `enableHlsForIos` setting + admin UI toggle.
-- Add `mediaPlayer: "ios-hls"` branch in `startSession()`.
-- Extend session idle timeout for `ios-hls` sessions (or better: keep session alive while `HlsRouter` is still serving its files).
-- Integration tests against play endpoint (no existing HLS test coverage; will add).
-
-**Estimated effort:** ~1–2 weeks of focused work. No new infra, mostly config plumbing and a test fixture.
-
-### Phase 2 — persistent HLS cache
-
-- Cache dir + lookup in `HlsRouter`.
-- Cache invalidation hook in the library scanner.
-- LRU eviction loop + `hlsCacheMaxBytes` wiring.
-- Admin endpoint + UI for manual purge.
-- Cache generation can reuse existing `Stream` by parameterizing output dir and "don't delete on close" flag.
-
-**Estimated effort:** ~2–4 weeks. Bulk of the risk is invalidation and eviction correctness.
-
-Phase 1 alone is usable by ShelfPlayer for streaming playback. `AVAssetDownloadURLSession` **downloads** need Phase 2 to survive multi‑day fetches and session expiry.
+- **Unit (mocha):** new tests in
+  [`test/server/objects/Stream.test.js`](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/test/server/objects/Stream.test.js),
+  [`test/server/controllers/SessionController.test.js`](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/test/server/controllers/SessionController.test.js),
+  and
+  [`test/server/managers/PlaybackSessionManager.test.js`](https://github.com/walkermc20/audiobookshelf/blob/ios-hls-persistent/test/server/managers/PlaybackSessionManager.test.js).
+  All green in CI (`Run Unit Tests` workflow).
+- **Integration:** 14-test browser harness at
+  [walkermc20/audiobookshelf-hls-test](https://github.com/walkermc20/audiobookshelf-hls-test)
+  exercises the end-to-end flow against a live fork, including
+  persistence across session close, cross-user 403 via marker, round-trip
+  404 after DELETE, idempotency, ffmpeg-kill race coverage. Latest run:
+  [2026-04-23, 14/14 PASS](https://github.com/walkermc20/audiobookshelf-hls-test/blob/main/test-runs/2026-04-23_93ac4c6c_14of14.md).
 
 ## 6. Compatibility
 
-- Progressive MP3/M4B direct‑play: unchanged for all existing clients.
-- Browser HLS transcode path (`mediaPlayer: 'web'` with unsupported MIME): unchanged.
-- Android clients: unchanged; they do not send `mediaPlayer: 'ios-hls'`.
-- Self‑hosters who do nothing: feature is off; no ffmpeg load added.
+| Client | Behavior |
+|---|---|
+| Web player (`mediaPlayer: "web"`) | Unchanged. |
+| Android app | Unchanged; does not send `"ios-hls"`. |
+| Official iOS app | Unchanged; does not send `"ios-hls"`. |
+| ShelfPlayer (future integration) | Sends `"ios-hls"`, gets persistent manifest URL. |
+| Self-hoster who does nothing | Feature off; zero extra ffmpeg load. |
 
-## 7. Risks and open questions
+## 7. Risks and deferred items
 
-1. **fmp4/iOS status.** The comment in `Stream.js:81` references a 2021‑era bug. If it's resolved, a follow‑up could switch to fmp4 for better `AVAssetDownloadURLSession` ergonomics. Not blocking v1.
-2. **Auth on leaked URLs.** Session‑ID‑as‑bearer is consistent with how the rest of ABS treats media URLs, but a signed per‑user token for cache URLs is a reasonable follow‑up.
-3. **Cache eviction policy.** LRU by total bytes is the simplest; an alternative is per‑item age. Open to maintainer preference.
-4. **Per‑library vs. server‑wide opt‑in.** Current proposal is server‑wide. A `LibrarySettings.enableHlsForIos` could layer on if libraries have mixed hardware budgets.
-5. **Test coverage.** There are currently no HLS‑specific tests in `/test`. v1 should add a test fixture covering: play endpoint returning HLS when enabled, `HlsRouter` serving segments, and fallback when disabled.
-6. **Transcode load on first play.** Even in Phase 1, any iOS‑HLS session triggers ffmpeg. Self‑hosters who enable the flag should expect the same CPU profile as a browser transcode session. Document in the settings help text.
+1. **fmp4/iOS status.** Hardcoded off since 2021 per a workaround
+   comment. Revisit in a follow-up if current iOS has resolved the
+   original bug; not gating v1.
+2. **Cache URL auth.** Session-ID-as-bearer, consistent with how cover
+   images and segment requests work today. A signed per-user HMAC
+   scheme is a reasonable follow-up but not required for the base
+   feature.
+3. **Cache-size cap.** Only TTL today, no LRU by bytes. A
+   pathological user could exhaust disk. Worth adding
+   `iosHlsPersistMaxBytes` as a follow-up.
+4. **Per-library opt-in.** Current proposal is server-wide. A
+   `LibrarySettings` layer could fold in later for mixed-hardware
+   setups.
+5. **Transcode load.** Enabling the flag does not change the per-play
+   CPU profile vs. the existing browser-transcode path — it just makes
+   the output persist. Will document in the settings help text.
 
-## 8. What I'd like feedback on before writing code
+## 8. Specific feedback I'd like
 
-- Does a new `mediaPlayer` value feel right, or would maintainers prefer a boolean like `preferHls: true`?
-- Is `ServerSettings` the right home, or should this live under a nested "transcoding" settings object if one is being planned?
-- Any objection to the cache path layout (`{MetadataPath}/hlsCache/...`)?
-- Preference on auth model for cache URLs in Phase 2 (session‑ID‑as‑bearer vs. HMAC)?
+One question first, everything else open:
+
+- **Is `enableIosHlsPersist` in `ServerSettings` (plus the
+  `ENABLE_IOS_HLS_PERSIST=1` env override) the right opt-in convention,
+  or would you prefer a different shape?** A possible alternative is
+  grouping it under a nested "transcoding" settings object if one is
+  planned, or exposing it only via env var for now.
+
+Everything else (marker-based cross-user auth, DELETE endpoint shape,
+TTL-only eviction, no cache-size cap in v1, mpegts over fmp4) is
+flexible; happy to change on your read.
+
+## 9. What I'll do next
+
+If direction is roughly acceptable, open a Draft PR from
+`walkermc20/audiobookshelf:ios-hls-persistent` into
+`advplyr/audiobookshelf:master`. If direction needs a substantive
+change, adjust and either update this Discussion or open a revised
+one.
 
 ---
 
-*Filed against advplyr/audiobookshelf. No code changes proposed in this issue — scoping only.*
+*Opening this as a Discussion (not an Issue or PR) so the conversation
+stays lightweight until the design is locked.*
