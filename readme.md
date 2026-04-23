@@ -12,6 +12,45 @@
   </p>
 </div>
 
+> ### Fork: opt-in persistent HLS for iOS clients
+>
+> This is a fork of [advplyr/audiobookshelf](https://github.com/advplyr/audiobookshelf)
+> that adds a **server-side opt-in** feature so third-party iOS clients (such as
+> [ShelfPlayer](https://github.com/rasmuslos/ShelfPlayer)) can use Apple's
+> `AVAssetDownloadURLSession` to stream and download audiobooks in a single
+> pipeline. Upstream ABS already produces HLS on demand; this fork makes the
+> resulting manifest URLs survive playback-session close, orphan sweeps, and
+> server restarts, which is the prerequisite for multi-day
+> `AVAssetDownloadURLSession` downloads.
+>
+> **Status:** reference implementation / proof of concept. The ShelfPlayer
+> author has responded positively and discussion is ongoing about the final
+> API shape (likely to add an explicit "transcode ready" poll and a
+> client-signalled completion hook that releases the cache). No upstream PR
+> has been filed; this is intentional until the design stabilizes.
+>
+> **How to enable:**
+>
+> 1. Set `ENABLE_IOS_HLS_PERSIST=1` on the server (env var).
+> 2. Client requests include `mediaPlayer: "ios-hls"` in the
+>    `POST /api/items/:id/play` body.
+>
+> If either is absent, behavior is byte-identical to upstream — **default off**.
+>
+> **Artifacts:**
+>
+> - Server change: [commit ac47208a](https://github.com/walkermc20/audiobookshelf/commit/ac47208a)
+>   (~40 lines across `server/objects/Stream.js`,
+>   `server/managers/PlaybackSessionManager.js`, `server/routers/HlsRouter.js`)
+> - Public test image: `ghcr.io/walkermc20/audiobookshelf:ios-hls-persistent`
+> - Test harness: https://github.com/walkermc20/audiobookshelf-hls-test
+>   (Python proxy + hls.js page that exercises the end-to-end flow)
+> - Design notes: `IOS_HLS_PROPOSAL.md` in this repo
+>
+> Below is the standard Audiobookshelf README, unchanged.
+
+---
+
 # About
 
 Audiobookshelf is a self-hosted audiobook and podcast server.
