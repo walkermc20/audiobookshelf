@@ -227,7 +227,10 @@ class SessionController {
       return res.sendStatus(400)
     }
 
-    // If still in memory, verify ownership and tear down cleanly first.
+    const streamDir = Path.join(this.playbackSessionManager.StreamsPath, sessionId)
+
+    // Ownership: prefer in-memory session if still present, otherwise read
+    // the .persistent marker which stores the owner userId at creation.
     const openSession = this.playbackSessionManager.getSession(sessionId)
     if (openSession) {
       if (openSession.userId !== req.user.id && !req.user.isAdminOrUp) {
@@ -235,13 +238,27 @@ class SessionController {
         return res.sendStatus(403)
       }
       await this.playbackSessionManager.removeSession(sessionId)
+    } else {
+      const markerPath = Path.join(streamDir, '.persistent')
+      if (await fs.pathExists(markerPath)) {
+        try {
+          const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'))
+          if (marker.userId && marker.userId !== req.user.id && !req.user.isAdminOrUp) {
+            Logger.warn(`[SessionController] deleteHlsCache: user "${req.user.username}" attempted to purge cache owned by another user`)
+            return res.sendStatus(403)
+          }
+        } catch (err) {
+          // Marker unreadable or corrupt. Best-effort: allow delete. An empty
+          // or malformed marker has no verifiable owner, so treating it as
+          // "unowned" is consistent with the pre-existing UUID-as-bearer model.
+          Logger.debug(`[SessionController] deleteHlsCache: marker "${markerPath}" unreadable: ${err.message}`)
+        }
+      }
+      // If neither a session nor a marker exist, fall through to idempotent 200.
     }
 
-    // Wipe the cache dir whether or not the session existed -- the file
-    // may have outlived its session via the persistOnClose marker. Path
-    // is constrained to StreamsPath/{sessionId}, and sessionId passed
-    // isUUID() above, so no traversal risk.
-    const streamDir = Path.join(this.playbackSessionManager.StreamsPath, sessionId)
+    // Wipe the cache dir. Path is constrained to StreamsPath/{sessionId}
+    // and sessionId was validated as a UUID above, so no traversal risk.
     try {
       await fs.remove(streamDir)
       Logger.info(`[SessionController] deleteHlsCache: purged "${streamDir}" (user=${req.user.username})`)

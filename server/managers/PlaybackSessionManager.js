@@ -319,8 +319,9 @@ class PlaybackSessionManager {
     }
 
     const mediaPlayer = options.mediaPlayer || 'unknown'
-    const iosHlsPersistEnabled = process.env.ENABLE_IOS_HLS_PERSIST === '1' && mediaPlayer === 'ios-hls'
-    const shouldDirectPlay = !iosHlsPersistEnabled && (options.forceDirectPlay || (!options.forceTranscode && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId)))
+    const iosHlsPersistEnabled = !!Database.serverSettings?.enableIosHlsPersist && mediaPlayer === 'ios-hls'
+    const effectiveForceTranscode = !!options.forceTranscode || iosHlsPersistEnabled
+    const shouldDirectPlay = options.forceDirectPlay || (!effectiveForceTranscode && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId))
 
     const mediaItemId = episodeId || libraryItem.media.id
     const userProgress = user.getMediaProgress(mediaItemId)
@@ -467,6 +468,9 @@ class PlaybackSessionManager {
       Logger.error(`[PlaybackSessionManager] Failed to create streams directory at "${this.StreamsPath}": ${error.message}`)
       throw new Error(`[PlaybackSessionManager] Failed to create streams directory at "${this.StreamsPath}"`, { cause: error })
     }
+    const ttlDays = Database.serverSettings?.iosHlsPersistTtlDays ?? 30
+    const ttlMs = ttlDays * 24 * 60 * 60 * 1000
+
     try {
       const streamsInPath = await fs.readdir(this.StreamsPath)
       for (const streamId of streamsInPath) {
@@ -478,11 +482,9 @@ class PlaybackSessionManager {
             const persistentMarker = Path.join(streamPath, '.persistent')
             if (await fs.pathExists(persistentMarker)) {
               // Persistent iOS HLS cache entry. Keep unless past TTL.
-              const ttlDays = Number(process.env.IOS_HLS_PERSIST_TTL_DAYS) || 30
               try {
                 const stat = await fs.stat(persistentMarker)
                 const ageMs = Date.now() - stat.mtimeMs
-                const ttlMs = ttlDays * 24 * 60 * 60 * 1000
                 if (ageMs > ttlMs) {
                   Logger.info(`[PlaybackSessionManager] Evicting persistent HLS cache past TTL (${ttlDays}d): "${streamPath}"`)
                   await fs.remove(streamPath)

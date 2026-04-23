@@ -31,11 +31,20 @@
 >
 > **How to enable:**
 >
-> 1. Set `ENABLE_IOS_HLS_PERSIST=1` on the server (env var).
-> 2. Client requests include `mediaPlayer: "ios-hls"` in the
+> 1. Server side — either:
+>    - Set `enableIosHlsPersist: true` in server settings
+>      (`Database.serverSettings`), or
+>    - Set `ENABLE_IOS_HLS_PERSIST=1` as an environment variable
+>      (overrides the setting, useful for headless deployments).
+> 2. Client side — requests include `mediaPlayer: "ios-hls"` in the
 >    `POST /api/items/:id/play` body.
 >
-> If either is absent, behavior is byte-identical to upstream — **default off**.
+> If either side is absent, behavior is byte-identical to upstream —
+> **default off**.
+>
+> TTL for persistent cache eviction can be configured as
+> `iosHlsPersistTtlDays` in server settings (default 30) or via the
+> `IOS_HLS_PERSIST_TTL_DAYS` env var override.
 >
 > **Client lifecycle:**
 >

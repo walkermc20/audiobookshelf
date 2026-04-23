@@ -37,6 +37,7 @@ class Stream extends EventEmitter {
     this.isResetting = false
     this.isClientInitialized = false
     this.isTranscodeComplete = false
+    this.isClosed = false
     this.segmentsCreated = new Set()
     this.furthestSegmentCreated = 0
 
@@ -239,7 +240,11 @@ class Stream extends EventEmitter {
     if (this.persistOnClose) {
       try {
         await fs.ensureDir(this.streamPath)
-        await fs.writeFile(Path.join(this.streamPath, '.persistent'), '')
+        const marker = JSON.stringify({
+          userId: this.user?.id || null,
+          createdAt: Date.now()
+        })
+        await fs.writeFile(Path.join(this.streamPath, '.persistent'), marker)
       } catch (err) {
         Logger.warn(`[STREAM] Failed to write .persistent marker: ${err.message}`)
       }
@@ -332,6 +337,11 @@ class Stream extends EventEmitter {
         Logger.info('[FFMPEG] Transcode Killed')
         this.ffmpeg = null
         clearInterval(this.loop)
+      } else if (this.isClosed) {
+        // Stream already closed (persistent session detached ffmpeg); swallow
+        // errors rather than triggering reset/re-close on a dead session.
+        Logger.info(`[FFMPEG] Error after stream close (persistent): "${err.message}"`)
+        this.ffmpeg = null
       } else {
         Logger.error('Ffmpeg Err', '"' + err.message + '"')
 
@@ -367,16 +377,20 @@ class Stream extends EventEmitter {
   }
 
   async close(errorMessage = null) {
+    this.isClosed = true
     clearInterval(this.loop)
 
     Logger.info('Closing Stream', this.id)
-    if (this.ffmpeg) {
-      this.ffmpeg.kill('SIGKILL')
-    }
-
     if (this.persistOnClose) {
-      Logger.info(`[STREAM] Persisting stream files on close (${this.streamPath})`)
+      // Leave ffmpeg running to finish the transcode; client may still be
+      // downloading segments out-of-band via AVAssetDownloadURLSession.
+      // The 'end' / 'error' handlers clean up this.ffmpeg when it exits
+      // and respect this.isClosed to avoid reset/re-close attempts.
+      Logger.info(`[STREAM] Persisting stream files on close; ffmpeg continues in background (${this.streamPath})`)
     } else {
+      if (this.ffmpeg) {
+        this.ffmpeg.kill('SIGKILL')
+      }
       await fs
         .remove(this.streamPath)
         .then(() => {
@@ -410,6 +424,9 @@ class Stream extends EventEmitter {
   }
 
   async reset(time) {
+    if (this.isClosed) {
+      return Logger.info(`[STREAM] Stream ${this.id} reset requested after close; ignoring`)
+    }
     if (this.isResetting) {
       return Logger.info(`[STREAM] Stream ${this.id} already resetting`)
     }
