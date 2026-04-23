@@ -37,6 +37,8 @@ class CronManager {
    * Closes open playback sessions that have not been updated in 36 hours
    * Cleans up expired auth sessions
    * Deactivates expired api keys
+   * Evicts persistent iOS HLS cache entries past TTL (opt-in feature;
+   *   no-op when no persistent markers exist on disk)
    * TODO: Clients should re-open the session if it is closed so that stale sessions can be closed sooner
    */
   initOpenSessionCleanupCron() {
@@ -44,6 +46,7 @@ class CronManager {
       Logger.debug('[CronManager] Open session cleanup cron executing')
       ShareManager.closeStaleOpenShareSessions()
       await this.playbackSessionManager.closeStaleOpenSessions()
+      await this.playbackSessionManager.removeOrphanStreams()
       await Database.cleanupExpiredSessions()
       await Database.deactivateExpiredApiKeys()
     })

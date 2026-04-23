@@ -43,7 +43,7 @@
 > **default off**.
 >
 > TTL for persistent cache eviction can be configured as
-> `iosHlsPersistTtlDays` in server settings (default 30) or via the
+> `iosHlsPersistTtlDays` in server settings (default 7) or via the
 > `IOS_HLS_PERSIST_TTL_DAYS` env var override.
 >
 > **Client lifecycle:**
@@ -59,10 +59,12 @@
 >   it), the client calls `DELETE /api/session/:id/hls-cache` to release
 >   the server-side transcode. Idempotent; works regardless of whether
 >   the session is still in memory.
-> - **TTL safety net:** on server startup, persistent HLS cache entries
->   whose `.persistent` marker is older than `IOS_HLS_PERSIST_TTL_DAYS`
->   (default 30) are evicted. Covers clients that crash before they
->   call `DELETE`.
+> - **TTL safety net:** at server startup **and nightly at 00:30 (server
+>   local time)**, persistent HLS cache entries whose `.persistent`
+>   marker is older than `iosHlsPersistTtlDays` (default **7**) are
+>   evicted. Covers clients that crash before they call `DELETE`. The
+>   nightly sweep piggybacks on the existing
+>   `initOpenSessionCleanupCron` — no new cron registration.
 >
 > **Artifacts:**
 >

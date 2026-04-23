@@ -488,7 +488,7 @@ class PlaybackSessionManager {
       Logger.error(`[PlaybackSessionManager] Failed to create streams directory at "${this.StreamsPath}": ${error.message}`)
       throw new Error(`[PlaybackSessionManager] Failed to create streams directory at "${this.StreamsPath}"`, { cause: error })
     }
-    const ttlDays = Database.serverSettings?.iosHlsPersistTtlDays ?? 30
+    const ttlDays = Database.serverSettings?.iosHlsPersistTtlDays ?? 7
     const ttlMs = ttlDays * 24 * 60 * 60 * 1000
 
     try {

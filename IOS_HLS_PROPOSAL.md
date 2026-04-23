@@ -109,11 +109,14 @@ If either side is absent, behavior is byte-identical to upstream.
    the in-memory session is gone but the `.persistent` marker exists.
    This is what makes the manifest URL survive session close / server
    restart.
-5. `PlaybackSessionManager.removeOrphanStreams()` (already runs at
-   startup) respects the marker: persistent dirs are kept unless their
-   marker mtime is older than `iosHlsPersistTtlDays` (default 30),
-   in which case they're evicted. Markerless orphan dirs are still
-   deleted exactly as before.
+5. `PlaybackSessionManager.removeOrphanStreams()` — invoked at server
+   startup **and** nightly at 00:30 local from the existing
+   `CronManager.initOpenSessionCleanupCron` — respects the marker:
+   persistent dirs are kept unless their marker mtime is older than
+   `iosHlsPersistTtlDays` (default **7**), in which case they're
+   evicted. Markerless orphan dirs are still deleted exactly as before.
+   The nightly cadence closes the "server never restarts → TTL never
+   fires" gap that a startup-only check would leave.
 
 ### 4.3 Completion signal
 

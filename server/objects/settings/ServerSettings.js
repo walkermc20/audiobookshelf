@@ -51,7 +51,7 @@ class ServerSettings {
 
     // iOS HLS persistent cache (opt-in). See readme.md "Fork" section.
     this.enableIosHlsPersist = false
-    this.iosHlsPersistTtlDays = 30
+    this.iosHlsPersistTtlDays = 7
 
     // Misc Flags
     this.chromecastEnabled = false
@@ -123,7 +123,7 @@ class ServerSettings {
     this.sortingIgnorePrefix = !!settings.sortingIgnorePrefix
     this.sortingPrefixes = settings.sortingPrefixes || ['the']
     this.enableIosHlsPersist = !!settings.enableIosHlsPersist
-    this.iosHlsPersistTtlDays = Number.isFinite(Number(settings.iosHlsPersistTtlDays)) ? Number(settings.iosHlsPersistTtlDays) : 30
+    this.iosHlsPersistTtlDays = Number.isFinite(Number(settings.iosHlsPersistTtlDays)) ? Number(settings.iosHlsPersistTtlDays) : 7
     this.chromecastEnabled = !!settings.chromecastEnabled
     this.dateFormat = settings.dateFormat || 'MM/dd/yyyy'
     this.timeFormat = settings.timeFormat || 'HH:mm'
