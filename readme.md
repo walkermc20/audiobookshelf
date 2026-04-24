@@ -23,11 +23,14 @@
 > server restarts, which is the prerequisite for multi-day
 > `AVAssetDownloadURLSession` downloads.
 >
-> **Status:** reference implementation / proof of concept. The ShelfPlayer
-> author has responded positively and discussion is ongoing about the final
-> API shape (likely to add an explicit "transcode ready" poll and a
-> client-signalled completion hook that releases the cache). No upstream PR
-> has been filed; this is intentional until the design stabilizes.
+> **Status:** Reference implementation complete and test-verified.
+> [Upstream Discussion #5207](https://github.com/advplyr/audiobookshelf/discussions/5207)
+> is open on `advplyr/audiobookshelf` to align on the opt-in shape
+> before a Draft PR. ShelfPlayer's author (rasmuslos) has responded
+> positively and indicated intent to implement the client side if
+> something along these lines lands upstream. No PR filed yet — this
+> fork will track the upstream conversation and evolve if the
+> maintainers prefer a different shape.
 >
 > **How to enable:**
 >
@@ -68,13 +71,19 @@
 >
 > **Artifacts:**
 >
-> - Server change: [commit ac47208a](https://github.com/walkermc20/audiobookshelf/commit/ac47208a)
->   (~40 lines across `server/objects/Stream.js`,
->   `server/managers/PlaybackSessionManager.js`, `server/routers/HlsRouter.js`)
-> - Public test image: `ghcr.io/walkermc20/audiobookshelf:ios-hls-persistent`
-> - Test harness: https://github.com/walkermc20/audiobookshelf-hls-test
->   (Python proxy + hls.js page that exercises the end-to-end flow)
-> - Design notes: `IOS_HLS_PROPOSAL.md` in this repo
+> - Branch: [`ios-hls-persistent`](https://github.com/walkermc20/audiobookshelf/tree/ios-hls-persistent)
+>   (~230 lines of server diff across `Stream.js`,
+>   `PlaybackSessionManager.js`, `HlsRouter.js`, `SessionController.js`,
+>   `ApiRouter.js`, `ServerSettings.js`, `CronManager.js`).
+> - Upstream Discussion: [advplyr/audiobookshelf#5207](https://github.com/advplyr/audiobookshelf/discussions/5207).
+> - Public test image (amd64): `ghcr.io/walkermc20/audiobookshelf:ios-hls-persistent`.
+> - Design notes: [`IOS_HLS_PROPOSAL.md`](./IOS_HLS_PROPOSAL.md) in this repo.
+> - Test harness (browser-based, 14-test integration suite):
+>   https://github.com/walkermc20/audiobookshelf-hls-test.
+> - Mocha unit tests on the fork: `test/server/objects/Stream.test.js`,
+>   `test/server/controllers/SessionController.test.js`,
+>   `test/server/managers/PlaybackSessionManager.test.js` — all green in
+>   the `Run Unit Tests` CI workflow.
 >
 > Below is the standard Audiobookshelf README, unchanged.
 
