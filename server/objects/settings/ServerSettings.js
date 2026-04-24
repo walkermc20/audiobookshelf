@@ -49,6 +49,10 @@ class ServerSettings {
     this.sortingIgnorePrefix = false
     this.sortingPrefixes = ['the', 'a']
 
+    // iOS HLS persistent cache (opt-in). See readme.md "Fork" section.
+    this.enableIosHlsPersist = false
+    this.iosHlsPersistTtlDays = 7
+
     // Misc Flags
     this.chromecastEnabled = false
     this.dateFormat = 'MM/dd/yyyy'
@@ -118,6 +122,8 @@ class ServerSettings {
 
     this.sortingIgnorePrefix = !!settings.sortingIgnorePrefix
     this.sortingPrefixes = settings.sortingPrefixes || ['the']
+    this.enableIosHlsPersist = !!settings.enableIosHlsPersist
+    this.iosHlsPersistTtlDays = Number.isFinite(Number(settings.iosHlsPersistTtlDays)) ? Number(settings.iosHlsPersistTtlDays) : 7
     this.chromecastEnabled = !!settings.chromecastEnabled
     this.dateFormat = settings.dateFormat || 'MM/dd/yyyy'
     this.timeFormat = settings.timeFormat || 'HH:mm'
@@ -201,6 +207,18 @@ class ServerSettings {
       Logger.info(`[ServerSettings] Using allowIframe from environment variable`)
       this.allowIframe = true
     }
+
+    if (process.env.ENABLE_IOS_HLS_PERSIST === '1' && !this.enableIosHlsPersist) {
+      Logger.info(`[ServerSettings] Using enableIosHlsPersist from environment variable`)
+      this.enableIosHlsPersist = true
+    }
+    if (process.env.IOS_HLS_PERSIST_TTL_DAYS) {
+      const envTtl = Number(process.env.IOS_HLS_PERSIST_TTL_DAYS)
+      if (Number.isFinite(envTtl) && envTtl > 0) {
+        Logger.info(`[ServerSettings] Using iosHlsPersistTtlDays from environment variable: ${envTtl}`)
+        this.iosHlsPersistTtlDays = envTtl
+      }
+    }
   }
 
   toJSON() {
@@ -230,6 +248,8 @@ class ServerSettings {
       podcastEpisodeSchedule: this.podcastEpisodeSchedule,
       sortingIgnorePrefix: this.sortingIgnorePrefix,
       sortingPrefixes: [...this.sortingPrefixes],
+      enableIosHlsPersist: this.enableIosHlsPersist,
+      iosHlsPersistTtlDays: this.iosHlsPersistTtlDays,
       chromecastEnabled: this.chromecastEnabled,
       dateFormat: this.dateFormat,
       timeFormat: this.timeFormat,

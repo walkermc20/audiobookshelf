@@ -1,0 +1,61 @@
+components:
+  schemas:
+    sessionId:
+      description: Playback session UUID.
+      type: string
+      format: uuid
+      example: 71547caa-9d94-4fca-a480-72231128ed93
+  responses:
+    deleteHlsCache200:
+      description: HLS cache entry purged (or was already absent). Idempotent.
+    deleteHlsCache400:
+      description: Session id is not a valid UUID.
+    deleteHlsCache403:
+      description: The authenticated user does not own this session / cache entry and is not an admin.
+    deleteHlsCache500:
+      description: Failed to remove the on-disk cache directory.
+paths:
+  /api/session/{id}/hls-cache:
+    parameters:
+      - name: id
+        in: path
+        description: Playback session UUID.
+        required: true
+        schema:
+          $ref: '#/components/schemas/sessionId'
+    delete:
+      operationId: deleteHlsCacheBySessionId
+      summary: Release the persistent HLS cache for a playback session
+      description: |
+        Available only when `enableIosHlsPersist` is set in server settings
+        (or the `ENABLE_IOS_HLS_PERSIST` environment variable is `1`) and
+        the session was started by a client sending `mediaPlayer: "ios-hls"`
+        to `POST /api/items/{id}/play`.
+
+        Intended to be called by clients using Apple's `AVAssetDownloadURLSession`
+        (or an equivalent offline-HLS client) after the `.movpkg` (or local
+        copy) has been captured, or when the user removes the downloaded
+        book. Releases the server-side transcode so the cache can be
+        reclaimed.
+
+        Works whether or not the playback session is still in memory.
+        Ownership is verified against the in-memory session when present,
+        otherwise against the `userId` stored in the on-disk `.persistent`
+        marker. Idempotent — returns 200 if the cache is already gone.
+
+        **Note:** this endpoint is the only session endpoint currently
+        documented in OpenAPI; the remaining session surface
+        (`GET /api/sessions`, `POST /api/session/{id}/sync`,
+        `POST /api/session/{id}/close`, `DELETE /api/sessions/{id}`) is
+        pre-existing and undocumented in the spec.
+      tags:
+        - Sessions
+      responses:
+        '200':
+          $ref: '#/components/responses/deleteHlsCache200'
+        '400':
+          $ref: '#/components/responses/deleteHlsCache400'
+        '403':
+          $ref: '#/components/responses/deleteHlsCache403'
+        '500':
+          $ref: '#/components/responses/deleteHlsCache500'

@@ -37,8 +37,11 @@ class Stream extends EventEmitter {
     this.isResetting = false
     this.isClientInitialized = false
     this.isTranscodeComplete = false
+    this.isClosed = false
     this.segmentsCreated = new Set()
     this.furthestSegmentCreated = 0
+
+    this.persistOnClose = !!transcodeOptions.persistOnClose
   }
 
   /**
@@ -234,6 +237,19 @@ class Stream extends EventEmitter {
   async start() {
     Logger.info(`[STREAM] START STREAM - Num Segments: ${this.numSegments}`)
 
+    if (this.persistOnClose) {
+      try {
+        await fs.ensureDir(this.streamPath)
+        const marker = JSON.stringify({
+          userId: this.user?.id || null,
+          createdAt: Date.now()
+        })
+        await fs.writeFile(Path.join(this.streamPath, '.persistent'), marker)
+      } catch (err) {
+        Logger.warn(`[STREAM] Failed to write .persistent marker: ${err.message}`)
+      }
+    }
+
     /** @type {import('../libs/fluentFfmpeg/index').FfmpegCommand} */
     this.ffmpeg = Ffmpeg()
     this.furthestSegmentCreated = 0
@@ -321,6 +337,13 @@ class Stream extends EventEmitter {
         Logger.info('[FFMPEG] Transcode Killed')
         this.ffmpeg = null
         clearInterval(this.loop)
+        this.emit('ffmpegExit')
+      } else if (this.isClosed) {
+        // Stream already closed (persistent session detached ffmpeg); swallow
+        // errors rather than triggering reset/re-close on a dead session.
+        Logger.info(`[FFMPEG] Error after stream close (persistent): "${err.message}"`)
+        this.ffmpeg = null
+        this.emit('ffmpegExit')
       } else {
         Logger.error('Ffmpeg Err', '"' + err.message + '"')
 
@@ -340,6 +363,7 @@ class Stream extends EventEmitter {
 
     this.ffmpeg.on('end', (stdout, stderr) => {
       Logger.info('[FFMPEG] Transcoding ended')
+      this.emit('ffmpegExit')
       // For very small fast load
       if (!this.isClientInitialized) {
         this.isClientInitialized = true
@@ -356,21 +380,29 @@ class Stream extends EventEmitter {
   }
 
   async close(errorMessage = null) {
+    this.isClosed = true
     clearInterval(this.loop)
 
     Logger.info('Closing Stream', this.id)
-    if (this.ffmpeg) {
-      this.ffmpeg.kill('SIGKILL')
+    if (this.persistOnClose) {
+      // Leave ffmpeg running to finish the transcode; client may still be
+      // downloading segments out-of-band via AVAssetDownloadURLSession.
+      // The 'end' / 'error' handlers clean up this.ffmpeg when it exits
+      // and respect this.isClosed to avoid reset/re-close attempts.
+      Logger.info(`[STREAM] Persisting stream files on close; ffmpeg continues in background (${this.streamPath})`)
+    } else {
+      if (this.ffmpeg) {
+        this.ffmpeg.kill('SIGKILL')
+      }
+      await fs
+        .remove(this.streamPath)
+        .then(() => {
+          Logger.info('Deleted session data', this.streamPath)
+        })
+        .catch((err) => {
+          Logger.error('Failed to delete session data', err)
+        })
     }
-
-    await fs
-      .remove(this.streamPath)
-      .then(() => {
-        Logger.info('Deleted session data', this.streamPath)
-      })
-      .catch((err) => {
-        Logger.error('Failed to delete session data', err)
-      })
 
     if (errorMessage) this.clientEmit('stream_error', { id: this.id, error: (errorMessage || '').trim() })
     else this.clientEmit('stream_closed', this.id)
@@ -395,6 +427,9 @@ class Stream extends EventEmitter {
   }
 
   async reset(time) {
+    if (this.isClosed) {
+      return Logger.info(`[STREAM] Stream ${this.id} reset requested after close; ignoring`)
+    }
     if (this.isResetting) {
       return Logger.info(`[STREAM] Stream ${this.id} already resetting`)
     }

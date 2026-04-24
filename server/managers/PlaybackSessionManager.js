@@ -24,6 +24,15 @@ class PlaybackSessionManager {
 
     /** @type {PlaybackSession[]} */
     this.sessions = []
+
+    /**
+     * Stream objects whose session has been closed but whose ffmpeg is still
+     * producing segments in the background (iOS HLS persistent cache). Keyed
+     * by sessionId. Lets deleteHlsCache find and kill the process before
+     * wiping the cache dir (fs.remove otherwise races against ffmpeg writes).
+     * @type {Map<string, import('../objects/Stream')>}
+     */
+    this.persistentStreams = new Map()
   }
 
   /**
@@ -318,8 +327,10 @@ class PlaybackSessionManager {
       await this.closeSession(user, session, null)
     }
 
-    const shouldDirectPlay = options.forceDirectPlay || (!options.forceTranscode && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId))
     const mediaPlayer = options.mediaPlayer || 'unknown'
+    const iosHlsPersistEnabled = !!Database.serverSettings?.enableIosHlsPersist && mediaPlayer === 'ios-hls'
+    const effectiveForceTranscode = !!options.forceTranscode || iosHlsPersistEnabled
+    const shouldDirectPlay = options.forceDirectPlay || (!effectiveForceTranscode && libraryItem.media.checkCanDirectPlay(options.supportedMimeTypes, episodeId))
 
     const mediaItemId = episodeId || libraryItem.media.id
     const userProgress = user.getMediaProgress(mediaItemId)
@@ -342,7 +353,8 @@ class PlaybackSessionManager {
       newPlaybackSession.playMethod = PlayMethod.DIRECTPLAY
     } else {
       Logger.debug(`[PlaybackSessionManager] "${user.username}" starting stream session for item "${libraryItem.id}" (Device: ${newPlaybackSession.deviceDescription})`)
-      const stream = new Stream(newPlaybackSession.id, this.StreamsPath, user, libraryItem, episodeId, userStartTime)
+      const transcodeOptions = iosHlsPersistEnabled ? { persistOnClose: true } : {}
+      const stream = new Stream(newPlaybackSession.id, this.StreamsPath, user, libraryItem, episodeId, userStartTime, transcodeOptions)
       await stream.generatePlaylist()
       stream.start() // Start transcode
 
@@ -354,6 +366,17 @@ class PlaybackSessionManager {
         Logger.debug(`[PlaybackSessionManager] Stream closed for session "${newPlaybackSession.id}" (Device: ${newPlaybackSession.deviceDescription})`)
         newPlaybackSession.stream = null
       })
+
+      if (iosHlsPersistEnabled) {
+        // Keep a reference to the Stream object even after closeSession
+        // removes the session from this.sessions -- ffmpeg is still running
+        // to finish the transcode in the background. deleteHlsCache needs
+        // to find this Stream to SIGKILL ffmpeg before wiping the cache dir.
+        this.persistentStreams.set(newPlaybackSession.id, stream)
+        stream.once('ffmpegExit', () => {
+          this.persistentStreams.delete(newPlaybackSession.id)
+        })
+      }
     }
     newPlaybackSession.audioTracks = audioTracks
 
@@ -465,6 +488,9 @@ class PlaybackSessionManager {
       Logger.error(`[PlaybackSessionManager] Failed to create streams directory at "${this.StreamsPath}": ${error.message}`)
       throw new Error(`[PlaybackSessionManager] Failed to create streams directory at "${this.StreamsPath}"`, { cause: error })
     }
+    const ttlDays = Database.serverSettings?.iosHlsPersistTtlDays ?? 7
+    const ttlMs = ttlDays * 24 * 60 * 60 * 1000
+
     try {
       const streamsInPath = await fs.readdir(this.StreamsPath)
       for (const streamId of streamsInPath) {
@@ -473,6 +499,23 @@ class PlaybackSessionManager {
           const session = this.sessions.find((se) => se.id === streamId)
           if (!session) {
             const streamPath = Path.join(this.StreamsPath, streamId)
+            const persistentMarker = Path.join(streamPath, '.persistent')
+            if (await fs.pathExists(persistentMarker)) {
+              // Persistent iOS HLS cache entry. Keep unless past TTL.
+              try {
+                const stat = await fs.stat(persistentMarker)
+                const ageMs = Date.now() - stat.mtimeMs
+                if (ageMs > ttlMs) {
+                  Logger.info(`[PlaybackSessionManager] Evicting persistent HLS cache past TTL (${ttlDays}d): "${streamPath}"`)
+                  await fs.remove(streamPath)
+                } else {
+                  Logger.debug(`[PlaybackSessionManager] Keeping persistent stream "${streamPath}" (age ${Math.round(ageMs / 86400000)}d / ${ttlDays}d)`)
+                }
+              } catch (err) {
+                Logger.warn(`[PlaybackSessionManager] Failed to stat persistent marker "${persistentMarker}": ${err.message}`)
+              }
+              continue
+            }
             Logger.debug(`[PlaybackSessionManager] Removing orphan stream "${streamPath}"`)
             await fs.remove(streamPath)
           }

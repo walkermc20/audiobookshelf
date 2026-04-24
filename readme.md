@@ -12,6 +12,83 @@
   </p>
 </div>
 
+> ### Fork: opt-in persistent HLS for iOS clients
+>
+> This is a fork of [advplyr/audiobookshelf](https://github.com/advplyr/audiobookshelf)
+> that adds a **server-side opt-in** feature so third-party iOS clients (such as
+> [ShelfPlayer](https://github.com/rasmuslos/ShelfPlayer)) can use Apple's
+> `AVAssetDownloadURLSession` to stream and download audiobooks in a single
+> pipeline. Upstream ABS already produces HLS on demand; this fork makes the
+> resulting manifest URLs survive playback-session close, orphan sweeps, and
+> server restarts, which is the prerequisite for multi-day
+> `AVAssetDownloadURLSession` downloads.
+>
+> **Status:** Reference implementation complete and test-verified.
+> [Upstream Discussion #5207](https://github.com/advplyr/audiobookshelf/discussions/5207)
+> is open on `advplyr/audiobookshelf` to align on the opt-in shape
+> before a Draft PR. ShelfPlayer's author (rasmuslos) has responded
+> positively and indicated intent to implement the client side if
+> something along these lines lands upstream. No PR filed yet — this
+> fork will track the upstream conversation and evolve if the
+> maintainers prefer a different shape.
+>
+> **How to enable:**
+>
+> 1. Server side — either:
+>    - Set `enableIosHlsPersist: true` in server settings
+>      (`Database.serverSettings`), or
+>    - Set `ENABLE_IOS_HLS_PERSIST=1` as an environment variable
+>      (overrides the setting, useful for headless deployments).
+> 2. Client side — requests include `mediaPlayer: "ios-hls"` in the
+>    `POST /api/items/:id/play` body.
+>
+> If either side is absent, behavior is byte-identical to upstream —
+> **default off**.
+>
+> TTL for persistent cache eviction can be configured as
+> `iosHlsPersistTtlDays` in server settings (default 7) or via the
+> `IOS_HLS_PERSIST_TTL_DAYS` env var override.
+>
+> **Client lifecycle:**
+>
+> - `POST /api/items/:id/play` with `mediaPlayer: "ios-hls"` starts a
+>   transcode and returns a manifest URL (`/hls/:sessionId/output.m3u8`).
+>   The manifest enumerates the complete segment list up front, so a
+>   client using `AVAssetDownloadURLSession` (or hls.js) can begin
+>   downloading immediately while ffmpeg is still producing segments.
+> - The manifest URL remains valid across session idle-expiry, orphan
+>   sweeps, and server restarts.
+> - When the client finishes capturing the asset (or the user deletes
+>   it), the client calls `DELETE /api/session/:id/hls-cache` to release
+>   the server-side transcode. Idempotent; works regardless of whether
+>   the session is still in memory.
+> - **TTL safety net:** at server startup **and nightly at 00:30 (server
+>   local time)**, persistent HLS cache entries whose `.persistent`
+>   marker is older than `iosHlsPersistTtlDays` (default **7**) are
+>   evicted. Covers clients that crash before they call `DELETE`. The
+>   nightly sweep piggybacks on the existing
+>   `initOpenSessionCleanupCron` — no new cron registration.
+>
+> **Artifacts:**
+>
+> - Branch: [`ios-hls-persistent`](https://github.com/walkermc20/audiobookshelf/tree/ios-hls-persistent)
+>   (~230 lines of server diff across `Stream.js`,
+>   `PlaybackSessionManager.js`, `HlsRouter.js`, `SessionController.js`,
+>   `ApiRouter.js`, `ServerSettings.js`, `CronManager.js`).
+> - Upstream Discussion: [advplyr/audiobookshelf#5207](https://github.com/advplyr/audiobookshelf/discussions/5207).
+> - Public test image (amd64): `ghcr.io/walkermc20/audiobookshelf:ios-hls-persistent`.
+> - Design notes: [`IOS_HLS_PROPOSAL.md`](./IOS_HLS_PROPOSAL.md) in this repo.
+> - Test harness (browser-based, 14-test integration suite):
+>   https://github.com/walkermc20/audiobookshelf-hls-test.
+> - Mocha unit tests on the fork: `test/server/objects/Stream.test.js`,
+>   `test/server/controllers/SessionController.test.js`,
+>   `test/server/managers/PlaybackSessionManager.test.js` — all green in
+>   the `Run Unit Tests` CI workflow.
+>
+> Below is the standard Audiobookshelf README, unchanged.
+
+---
+
 # About
 
 Audiobookshelf is a self-hosted audiobook and podcast server.

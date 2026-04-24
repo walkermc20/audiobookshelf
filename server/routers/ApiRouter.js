@@ -236,6 +236,7 @@ class ApiRouter {
     this.router.get('/session/:id', SessionController.openSessionMiddleware.bind(this), SessionController.getOpenSession.bind(this))
     this.router.post('/session/:id/sync', SessionController.openSessionMiddleware.bind(this), SessionController.sync.bind(this))
     this.router.post('/session/:id/close', SessionController.openSessionMiddleware.bind(this), SessionController.close.bind(this))
+    this.router.delete('/session/:id/hls-cache', SessionController.deleteHlsCache.bind(this))
 
     //
     // Podcast Routes

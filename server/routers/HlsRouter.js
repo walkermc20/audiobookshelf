@@ -50,12 +50,7 @@ class HlsRouter {
    */
   async streamFileRequest(req, res) {
     const streamId = req.params.stream
-    // Ensure stream is open
     const stream = this.playbackSessionManager.getStream(streamId)
-    if (!stream) {
-      Logger.error(`[HlsRouter] Stream "${streamId}" does not exist`)
-      return res.sendStatus(404)
-    }
 
     // Ensure stream filepath is valid
     const streamDir = Path.join(this.playbackSessionManager.StreamsPath, streamId)
@@ -69,6 +64,20 @@ class HlsRouter {
     if (fileExt !== '.ts' && fileExt !== '.m3u8') {
       Logger.error(`[HlsRouter] Invalid file parameter "${req.params.file}" extname. Must be .ts or .m3u8`)
       return res.sendStatus(400)
+    }
+
+    if (!stream) {
+      // Session is gone; allow serving from a persistent HLS dir if present.
+      const persistentMarker = Path.join(streamDir, '.persistent')
+      if (await fs.pathExists(persistentMarker)) {
+        if (await fs.pathExists(fullFilePath)) {
+          return res.sendFile(fullFilePath)
+        }
+        Logger.warn(`[HlsRouter] Persistent stream "${streamId}" missing file ${req.params.file}`)
+        return res.sendStatus(404)
+      }
+      Logger.error(`[HlsRouter] Stream "${streamId}" does not exist`)
+      return res.sendStatus(404)
     }
 
     if (!(await fs.pathExists(fullFilePath))) {

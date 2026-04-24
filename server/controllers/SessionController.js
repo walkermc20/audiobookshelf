@@ -2,6 +2,7 @@ const Path = require('path')
 const { Request, Response, NextFunction } = require('express')
 const Logger = require('../Logger')
 const Database = require('../Database')
+const fs = require('../libs/fsExtra')
 const { toNumber, isUUID } = require('../utils/index')
 const { getAudioMimeTypeFromExtname, encodeUriPath } = require('../utils/fileUtils')
 const { PlayMethod } = require('../utils/constants')
@@ -197,6 +198,112 @@ class SessionController {
     }
 
     await Database.removePlaybackSession(req.playbackSession.id)
+    res.sendStatus(200)
+  }
+
+  /**
+   * DELETE: /api/session/:id/hls-cache
+   *
+   * Release a persistent HLS cache entry created by an ios-hls session.
+   * The client calls this when its AVAssetDownloadTask has finished
+   * capturing the asset (or when the user removes the book), at which
+   * point the server-side transcode is safe to delete.
+   *
+   * Works whether or not the session is still in memory -- a download
+   * may span days, well past the 36h idle-expiry of the in-memory
+   * session record.
+   *
+   * Idempotent: returns 200 even if the cache dir is already gone.
+   *
+   * @this {import('../routers/ApiRouter')}
+   *
+   * @param {RequestWithUser} req
+   * @param {Response} res
+   */
+  async deleteHlsCache(req, res) {
+    const sessionId = req.params.id
+    if (!isUUID(sessionId)) {
+      Logger.warn(`[SessionController] deleteHlsCache: invalid session id "${sessionId}"`)
+      return res.sendStatus(400)
+    }
+
+    const streamDir = Path.join(this.playbackSessionManager.StreamsPath, sessionId)
+
+    // Ownership: prefer in-memory session if still present, otherwise read
+    // the .persistent marker which stores the owner userId at creation.
+    const openSession = this.playbackSessionManager.getSession(sessionId)
+    if (openSession) {
+      if (openSession.userId !== req.user.id && !req.user.isAdminOrUp) {
+        Logger.warn(`[SessionController] deleteHlsCache: user "${req.user.username}" attempted to purge session owned by another user`)
+        return res.sendStatus(403)
+      }
+      await this.playbackSessionManager.removeSession(sessionId)
+    } else {
+      const markerPath = Path.join(streamDir, '.persistent')
+      if (await fs.pathExists(markerPath)) {
+        try {
+          const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'))
+          if (marker.userId && marker.userId !== req.user.id && !req.user.isAdminOrUp) {
+            Logger.warn(`[SessionController] deleteHlsCache: user "${req.user.username}" attempted to purge cache owned by another user`)
+            return res.sendStatus(403)
+          }
+        } catch (err) {
+          // Marker unreadable or corrupt. Best-effort: allow delete. An empty
+          // or malformed marker has no verifiable owner, so treating it as
+          // "unowned" is consistent with the pre-existing UUID-as-bearer model.
+          Logger.debug(`[SessionController] deleteHlsCache: marker "${markerPath}" unreadable: ${err.message}`)
+        }
+      }
+      // If neither a session nor a marker exist, fall through to idempotent 200.
+    }
+
+    // A persistent-close session leaves ffmpeg running in the background
+    // (persistOnClose) so the transcode can finish even after the client
+    // moved on. When the client signals completion via this endpoint we
+    // have to kill ffmpeg first -- otherwise fs.remove races against
+    // active segment writes and fails with ENOTEMPTY on final rmdir.
+    const persistentStream = this.playbackSessionManager.persistentStreams?.get(sessionId)
+    if (persistentStream?.ffmpeg) {
+      Logger.info(`[SessionController] deleteHlsCache: killing background ffmpeg for "${sessionId}"`)
+      try {
+        persistentStream.ffmpeg.kill('SIGKILL')
+      } catch (err) {
+        Logger.warn(`[SessionController] deleteHlsCache: kill failed (continuing): ${err.message}`)
+      }
+      // The Stream's error handler nulls this.ffmpeg on SIGKILL. Poll with
+      // a short cap so we proceed regardless (fs.remove has its own retry
+      // below and Linux tolerates unlinking files under open fds).
+      for (let i = 0; i < 20 && persistentStream.ffmpeg; i++) {
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      this.playbackSessionManager.persistentStreams.delete(sessionId)
+    }
+
+    // Wipe the cache dir. Path is constrained to StreamsPath/{sessionId}
+    // and sessionId was validated as a UUID above, so no traversal risk.
+    // Retry a few times to cover any tail-end ffmpeg writes that slipped
+    // past the kill (rare, but observed in tests under copy-codec mpegts).
+    let lastErr = null
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await fs.remove(streamDir)
+        lastErr = null
+        break
+      } catch (err) {
+        lastErr = err
+        if (err.code === 'ENOENT') {
+          lastErr = null
+          break
+        }
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)))
+      }
+    }
+    if (lastErr) {
+      Logger.error(`[SessionController] deleteHlsCache: failed to purge "${streamDir}" after retries: ${lastErr.message}`)
+      return res.sendStatus(500)
+    }
+    Logger.info(`[SessionController] deleteHlsCache: purged "${streamDir}" (user=${req.user.username})`)
+
     res.sendStatus(200)
   }
 
